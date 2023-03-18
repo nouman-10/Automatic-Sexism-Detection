@@ -1,12 +1,21 @@
-from datasets import load_dataset, DatasetDict
-from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer, DataCollatorWithPadding
+from datasets import DatasetDict, load_dataset
 from sklearn.metrics import classification_report
+from transformers import (
+    AutoModelForSequenceClassification,
+    AutoTokenizer,
+    DataCollatorWithPadding,
+    Trainer,
+    TrainingArguments,
+    pipeline,
+)
 
 import helper_functions as f
 
 
 class FineTune:
-    def __init__(self, dataset_name, output_model_name, model_checkpoint, num_labels, epochs, tokenizer_checkpoint=None) -> None:
+    def __init__(
+        self, dataset_name, output_model_name, model_checkpoint, num_labels, epochs, tokenizer_checkpoint=None
+    ) -> None:
         self.dataset_name = dataset_name
         self.model_checkpoint = model_checkpoint
         self.tokenizer_checkpoint = tokenizer_checkpoint if tokenizer_checkpoint else model_checkpoint
@@ -23,21 +32,18 @@ class FineTune:
         self.training_args = None
 
         self.task = "task1" if num_labels == 2 else "task2"
-        if self.task == 'task1':
-          self.mapping = {
-              'sexist': 1,
-              'non-sexist': 0
-          }
+        if self.task == "task1":
+            self.mapping = {"sexist": 1, "non-sexist": 0}
         else:
-          self.mapping = {
-              "non-sexist": 0,
-              "objectification": 1,
-              "misogyny-non-sexual-violence": 2,
-              "ideological-inequality": 3,
-              "stereotyping-dominance": 4,
-              "sexual-violence": 5
-          }
-        
+            self.mapping = {
+                "non-sexist": 0,
+                "objectification": 1,
+                "misogyny-non-sexual-violence": 2,
+                "ideological-inequality": 3,
+                "stereotyping-dominance": 4,
+                "sexual-violence": 5,
+            }
+
     def load_dataset(self) -> DatasetDict:
         """Load dataset from huggingface hub
 
@@ -46,7 +52,7 @@ class FineTune:
         """
         dataset = load_dataset(self.dataset_name)
         return dataset
-    
+
     def load_tokenizer(self) -> None:
         """Load tokenizer from huggingface hub
 
@@ -61,7 +67,9 @@ class FineTune:
         Returns:
             AutoModelForSequenceClassification: model
         """
-        self.model = AutoModelForSequenceClassification.from_pretrained(self.model_checkpoint, num_labels=self.num_labels, from_tf=True)
+        self.model = AutoModelForSequenceClassification.from_pretrained(
+            self.model_checkpoint, num_labels=self.num_labels, from_tf=True
+        )
 
     def load_data_collator(self) -> None:
         """Load data collator"""
@@ -76,10 +84,10 @@ class FineTune:
         Returns:
             DatasetDict: preprocessed dataset
         """
-        examples["text"] = [remove_hashtags_links_mentions(text) for text in examples["text"]]
+        examples["text"] = [f.remove_hashtags_links_mentions(text) for text in examples["text"]]
         examples["label"] = [self.mapping[label] for label in examples[self.task]]
         return self.tokenizer(examples["text"], truncation=True)
-    
+
     def define_training_args(self) -> None:
         """Define training arguments"""
         self.training_args = TrainingArguments(
@@ -108,7 +116,7 @@ class FineTune:
             eval_dataset=dataset["valid"],
             tokenizer=self.tokenizer,
             data_collator=self.data_collator,
-            compute_metrics=compute_metrics
+            compute_metrics=compute_metrics,
         )
 
     def evaluate(self, test_dataset) -> None:
@@ -117,23 +125,24 @@ class FineTune:
         Args:
             test_dataset (DatasetDict): test dataset
         """
-        trained_model = pipeline("text-classification", model=self.output_model_name, tokenizer=self.tokenizer_checkpoint, truncation=True)
+        trained_model = pipeline(
+            "text-classification", model=self.output_model_name, tokenizer=self.tokenizer_checkpoint, truncation=True
+        )
         texts = [f.remove_hashtags_links_mentions(text) for text in test_dataset["text"]]
         labels = [label for label in test_dataset["task1"]]
 
         preds = trained_model(texts)
-        final_preds = ['non-sexist' if p['label'] == "LABEL_0" else "sexist" for p in preds]
-        
-        print(classification_report(labels, final_preds))
-
-        labels = [label for label in test_dataset["task2"]]
-
-        reverse_mapping = {value: key for key, value in self.mapping.items()}
-        final_preds = [reverse_mapping[int(p['label'].split('_')[1])] for p in preds]
+        final_preds = ["non-sexist" if p["label"] == "LABEL_0" else "sexist" for p in preds]
 
         print(classification_report(labels, final_preds))
 
+        if self.num_labels > 2:
+            labels = [label for label in test_dataset["task2"]]
 
+            reverse_mapping = {value: key for key, value in self.mapping.items()}
+            final_preds = [reverse_mapping[int(p["label"].split("_")[1])] for p in preds]
+
+            print(classification_report(labels, final_preds))
 
     def fine_tune(self) -> None:
         """Fine tune model"""
@@ -143,14 +152,41 @@ class FineTune:
         self.load_model()
         self.load_data_collator()
 
-        columns_to_remove = ["text", "task1", "task2"] if self.dataset_name == "nouman-10/exist-en" else ["text", "task1"]
-
-        dataset = dataset.map(
-            self.preprocess_function, batched=True, remove_columns=columns_to_remove
+        columns_to_remove = (
+            ["text", "task1", "task2"] if self.dataset_name == "nouman-10/exist-en" else ["text", "task1"]
         )
+
+        dataset = dataset.map(self.preprocess_function, batched=True, remove_columns=columns_to_remove)
 
         self.define_training_args()
         self.define_trainer(dataset)
 
         self.trainer.train()
         self.trainer.push_to_hub()
+
+
+def train_model(dataset_name, output_model_name, model_checkpoint, num_labels, tokenizer_checkpoint=None, train=False):
+    """Train model
+
+    Args:
+        dataset_name (str): name of the dataset
+        output_model_name (str): name of the output model
+        model_checkpoint (str): model checkpoint
+        num_labels (int): number of labels
+        epochs (int): number of epochs
+        tokenizer_checkpoint (str, optional): tokenizer checkpoint. Defaults to None.
+    """
+    fine_tuning = FineTune(
+        dataset_name=dataset_name,
+        model_checkpoint=model_checkpoint,
+        tokenizer_checkpoint=tokenizer_checkpoint,
+        output_model_name=output_model_name,
+        num_labels=num_labels,
+        epochs=10,
+    )
+
+    if train:
+        fine_tuning.fine_tune()
+    dataset = fine_tuning.load_dataset()
+
+    fine_tuning.evaluate(dataset["test"])
